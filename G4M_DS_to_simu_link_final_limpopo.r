@@ -19,7 +19,8 @@ g4mid_to_simuid <- function(DS.res = out.res,
 
   # DS.res=readRDS(paste0('../Isimip/13072022/postproc/new/output_15002.000002.RData'))[[3]]$out.res
 
-  mapping <- readRDS(file = 'input/G4M_mapping.RData')[[1]]
+  # mapping <- readRDS(file = 'input/G4M_mapping.RData')[[1]]
+  mapping <- readRDS(file = path('G4M_mapping.RData'))[[1]]
   mapping <- apply(mapping, 2, as.character)
   mapping <- data.frame(mapping)
   mapping <- mapping %>% rename("g4m_id" = "g4m_05_id", "ns" = "SimUID")
