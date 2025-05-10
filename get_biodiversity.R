@@ -224,7 +224,7 @@ downscalr_out <- rfunc(path(str_glue( "output_", cluster_nr, ".",
                                       sprintf("%06d",current_scen$ScenNr),".RData")))
 #  group_by(times) %>% group_split()
 
-# Get output
+# Get output of merged Downscale & G4M spatial layer at ns resolution ------
 results <- g4mid_to_simuid(downscalr_out,lab,project,scen1,scen2,scen3)
 
 #results <- downscalr_out %>% map_df(~g4mid_to_simuid(.,lab,project,scen1,scen2,scen3)) %>% rbind
@@ -242,7 +242,7 @@ built <- readRDS(path("Input","built_area.RData")) %>% rename(ns=SimUID) %>%
   mutate(ns=as.factor(ns))
 
 
-# Get utilization
+# Get G4M utilization ------
 g4m_utilization <- read.csv(str_glue("area_harvest_map_{project}_{lab}_{scen1}_{scen3}_{scen2}.csv")) %>%
   dplyr::select(g4m_id,used,year) %>% mutate(g4m_id=as.factor(g4m_id)) %>% rename(times=year)
 
@@ -403,7 +403,7 @@ if (dim(restored)[1] > 0){
 
 
 
-# Get BII indicator
+# Get BII indicator ------
 if (get_bii) {
 print("bii calculation")
 
@@ -527,7 +527,7 @@ print("bii calculation")
   bii_simu <- bii <- NULL
 }
 
-# Get cSAR indicator
+# Get cSAR indicator------
 if (get_csar){
   print("csar calculation")
 
@@ -650,5 +650,6 @@ if (get_csar){
   csar_simu <- csar <- NULL
 }
 
-saveRDS(list(bii_simu,bii,csar_simu,csar),"Output/biodiversity.RData")
+# Save ns and REGION level biodiv results ------
+saveRDS(list(bii_simu,bii,csar_simu,csar,results),paste0("Output/biodiversity_",project,"_",lab,".RData"))
 
