@@ -4,6 +4,8 @@ args <- commandArgs(trailing = TRUE)
 library(tidyverse)
 library(fs)
 
+# Define_functions ------
+
 #' Auxiliary function to recode BII coefficients
 #' according to forest and non-forest ecosystems
 recode_if <- function(x, condition, ...) {
@@ -183,7 +185,7 @@ process_csar <- function(x){
 
 }
 
-# Get scenario
+# Get scenario------
 # test if there is at least one argument: if not, return an error
 if (length(args)==0) {
   stop("At least one argument must be supplied", call.=FALSE)
@@ -193,10 +195,10 @@ if (length(args)==0) {
 }
 
 
-# Load G4M output conversion function
+# Load G4M output conversion function------
 source("G4M_DS_to_simu_link_final_limpopo.R")
 
-# Get cluster number of downscaling post-processing
+# Get cluster number of downscaling post-processing------
 config <- readRDS(path("Input","config.RData"))
 
 project <- config[[1]]
@@ -242,7 +244,7 @@ built <- readRDS(path("Input","built_area.RData")) %>% rename(ns=SimUID) %>%
   mutate(ns=as.factor(ns))
 
 
-# Get G4M utilization ------
+# Get utilization
 g4m_utilization <- read.csv(str_glue("area_harvest_map_{project}_{lab}_{scen1}_{scen3}_{scen2}.csv")) %>%
   dplyr::select(g4m_id,used,year) %>% mutate(g4m_id=as.factor(g4m_id)) %>% rename(times=year)
 
@@ -256,7 +258,7 @@ managed_forests <- g4m_mapping %>% left_join(g4m_utilization) %>% drop_na() %>% 
 initial <- results %>% filter(times==2010)
 
 
-#' Get abandoned land - !!! for now all classes are bundled into abandoned land
+#' Get abandoned land - !!! for now all classes are bundled into abandoned land------
 #' since in GLOBIOM Trunk they are not differentiated. The BII and CFs are then
 #' given by the average values of abandoned cropland and grassland
 
@@ -326,7 +328,7 @@ natlnd_cons <- natlnd_cons %>% filter(lu.to=="OthNatLnd") %>%
   rbind(r_crplnd,r_grslnd,r_pltfor,r_mngfor) %>% drop_na()
 
 
-#' Get forest restored land  - for now afforestation areas that are not managed along
+#' Get forest restored land  - for now afforestation areas that are not managed along ----
 #' the simulation period are considered restoration.
 
 # Get forest and non-forest shares
@@ -405,7 +407,7 @@ if (dim(restored)[1] > 0){
 
 # Get BII indicator ------
 if (get_bii) {
-print("bii calculation")
+  print("bii calculation")
 
   # Get BII coeficients and add restored abandoned land
   bii_coefs <- readRDS(path("Input","BII_coefs.RData"))
@@ -456,13 +458,13 @@ print("bii calculation")
     dplyr::select(class,BII_FINAL,weightSum) %>%
     rename(LUclass=class,BII=BII_FINAL)
 
-  # Merge coeficients
+  ## Merge bii_coefs coeficients-----
   bii_coefs <- bii_coefs %>% rbind(restored_coef,aff_restored)
 
-  # Get mapping between GLOBIOM land cover types and BII land cover types
+  ## Get mapping between GLOBIOM land cover types and BII land cover types
   lc_map <- readRDS(path("Input","BTC_LC_MAP.RData"))
 
-  # Define mapping
+  ## Define lc_map mapping -----
   lc_type <- c("Grass","OthNatLnd","CrpLnd","forest_managed","forest_unmanaged","PltFor","built_area",
                "AbnCrpLnd","AbnGrsLnd","AbnPltFor","AbnMngFor",
                "restored_10","restored_20","restored_30","restored_40","restored_50","restored_60","restored_70","restored_80",
@@ -470,7 +472,7 @@ print("bii calculation")
                "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
                "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80"
-               )
+  )
   bii_type <- c("grassland","other","cropland_other","forest_managed","forest_unmanaged","cropland_2Gbioen","built.up",
                 "abn_cropland_other","abn_grassland","abn_cropland_2Gbioen","abn_forest_managed",
                 "restored_f_10","restored_f_20","restored_f_30","restored_f_40","restored_f_50","restored_f_60","restored_f_70","restored_f_80",
@@ -478,7 +480,7 @@ print("bii calculation")
                 "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                 "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
                 "AbnMngFor_restored_10_f","AbnMngFor_restored_20_f","AbnMngFor_restored_30_f","AbnMngFor_restored_40_f","AbnMngFor_restored_50_f","AbnMngFor_restored_60_f","AbnMngFor_restored_70_f","AbnMngFor_restored_80_f"
-                )
+  )
   lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=bii_type)
 
   results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
@@ -531,7 +533,7 @@ print("bii calculation")
 if (get_csar){
   print("csar calculation")
 
-  # Get cSAR coeficients
+  ## Get cSAR coeficients-----
   csar_coefs <- readRDS(path("Input","PSLglobal_extended.RData")) %>%
     mutate(forest_managed=0.5*(extensive_forestry+intensive_forestry)) %>%#,
     gather(LUclass,CF,-c(ecoregion))
@@ -549,15 +551,15 @@ if (get_csar){
   age <- seq(10,80,10)
   ecoreg <- csar_coefs$ecoregion %>% unique()
 
-  # Land cover classes
+  ## Land cover classes
   lorg <- c("annual_crops","pasture","permanent_crops","forest_managed")
   lurest <- c("AbnCrpLnd","AbnGrsLnd","AbnPltFor","AbnMngFor")
   lu <- tibble(LUclass=lorg,LC_TYPE=lurest)
 
-  # Mapping between land and BII land
+  ## Mapping between land and BII land-----
   land_map <- tibble(LUclass=lorg,LC_TYPE=lurest)
 
-  # Compute coefficients for abandoned areas
+  ## Compute coefficients for abandoned areas-----
   restored_coef <- expand.grid(lurest,age,ecoreg) %>% rename(LC_TYPE = Var1, Age = Var2, ecoregion = Var3) %>%
     mutate(class=str_c(LC_TYPE,"_restored_",Age)) %>%
     left_join(land_map) %>% left_join(csar_coefs) %>%
@@ -652,4 +654,3 @@ if (get_csar){
 
 # Save ns and REGION level biodiv results ------
 saveRDS(list(bii_simu,bii,csar_simu,csar,results),paste0("Output/biodiversity_",project,"_",lab,".RData"))
-
