@@ -19,6 +19,11 @@ g4mid_to_simuid <- function(DS.res = out.res,
 
   # DS.res=readRDS(paste0('../Isimip/13072022/postproc/new/output_15002.000002.RData'))[[3]]$out.res
 
+  cat("------Start linking DS and G4M results and merging to ns level","------","\n")
+  cat("------Project Label: ",project,", ",lab,"------","\n")
+  cat(paste0("------Scenario: ",curr.SCEN1,"_",curr.SCEN3,"_",curr.SCEN2,"------"),"\n")
+
+
   # mapping <- readRDS(file = 'input/G4M_mapping.RData')[[1]]
   mapping <- readRDS(file = path('G4M_mapping.RData'))[[1]]
   mapping <- apply(mapping, 2, as.character)
@@ -49,19 +54,19 @@ g4mid_to_simuid <- function(DS.res = out.res,
       lu.from = recode(
         lu.from,
         "OthNatLnd" = "G4Mland",
+        "Forest" = "G4Mland",
         "PriFor" = "G4Mland",
         "MngFor" = "G4Mland",
-        "protected_other" =
-          "G4Mland",
+
         "protected_priforest" =
           "G4Mland",
       ),
       lu.to = recode(
         lu.to,
         "OthNatLnd" = "G4Mland",
+		    "Forest" = "G4Mland",
         "PriFor" = "G4Mland",
         "MngFor" = "G4Mland",
-        "protected_other" = "G4Mland",
         "protected_priforest" =
           "G4Mland",
       )

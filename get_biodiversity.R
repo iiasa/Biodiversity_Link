@@ -222,9 +222,48 @@ scen2 <- current_scen$SCEN2
 scen3 <- current_scen$SCEN3
 
 # Load in downscalr output
-downscalr_out <- rfunc(path(str_glue( "output_", cluster_nr, ".",
+downscalr_out0 <- rfunc(path(str_glue( "output_", cluster_nr, ".",
                                       sprintf("%06d",current_scen$ScenNr),".RData")))
 #  group_by(times) %>% group_split()
+
+# Process RstLnd in res---
+cat("==> Process RstLnd in res","\n")
+
+# mapping: ns to g4m 0.5degree grids
+mapping <- readRDS(file='G4m_mapping.RData')[[1]]
+mapping <- data.frame(apply(mapping, 2, as.numeric))
+
+# mapping_g4mid_xy_new <- readRDS(file="mapping_for_G4MDSlink.RData")[[1]]
+maplayer_isforest_new <- readRDS(file="mapping_for_G4MDSlink.RData")[[2]]
+
+res0 <- downscalr_out0
+mapping$SimUID <- as.character(mapping$SimUID)
+mapping$g4m_05_id <- as.character(mapping$g4m_05_id)
+
+# 1) mapping dat to g4mid
+res1 <- res0 %>% left_join(mapping, by=c("ns"="SimUID"))
+
+# Assign RstLnd to afforestable or non-afforestable
+res2 <- res1 %>% left_join(maplayer_isforest_new) %>%
+  mutate(IsForest=ifelse(is.na(IsForest),0,IsForest)) %>%
+  mutate(lu.from=ifelse(IsForest==1,
+                        recode(lu.from,"RstLnd"="RstLnd_YesAffor"),
+                        recode(lu.from,"RstLnd"="RstLnd_NoAffor")))%>%
+  mutate(lu.to=ifelse(IsForest==1,
+                      recode(lu.to,"RstLnd"="RstLnd_YesAffor"),
+                      recode(lu.to,"RstLnd"="RstLnd_NoAffor")))
+
+# Reallocate Rstlnd_YesAffor to OtherNatLnd
+res3 <- res2 %>%
+  mutate(lu.from=recode(lu.from,"RstLnd_YesAffor"="OthNatLnd")) %>%
+  mutate(lu.to=recode(lu.to,"RstLnd_YesAffor"="OthNatLnd"))
+
+res4 <- res3 %>%
+  group_by(REGION,times,ns,lu.to,lu.from,g4m_05_id) %>% summarise(value=sum(value)) %>%
+  select(-c(g4m_05_id)) %>% ungroup()
+
+downscalr_out <- res4
+# END: Process RstLnd in res---
 
 # Get output of merged Downscale & G4M spatial layer at ns resolution ------
 results <- g4mid_to_simuid(downscalr_out,lab,project,scen1,scen2,scen3)
@@ -232,6 +271,35 @@ results <- g4mid_to_simuid(downscalr_out,lab,project,scen1,scen2,scen3)
 #results <- downscalr_out %>% map_df(~g4mid_to_simuid(.,lab,project,scen1,scen2,scen3)) %>% rbind
 # ------------------------------------------------------------------------------
 
+mapping_LC_BiodLink <- readRDS(file="mapping_LC_BiodLink.RData")[[1]]
+results0 <- results
+results <- results %>%
+  left_join(mapping_LC_BiodLink,by=c("lu.from"="lu.linkoutput")) %>%
+  select(-c(lu.from)) %>%
+  rename(lu.from=lu.new) %>%
+  left_join(mapping_LC_BiodLink,by=c("lu.to"="lu.linkoutput")) %>%
+  select(-c(lu.to)) %>%
+  rename(lu.to=lu.new) %>%
+  select(REGION,times,ns,lu.to,value,lu.from)%>%
+  group_by(REGION,times,ns,lu.to,lu.from) %>%
+  summarise(value=sum(value)) %>%
+  ungroup()
+
+## YW: separate restored_nf age class-----
+## The current method is to merge it directly into "OthNatLnd", so the RstLnd_nf will be identified as abandoned land as well, in the step "Get abandoned land"; further these restored_nf land will be mapped to "AbnCrpLnd_restored_nf" (mostly, because of f_nf_share for cells with RstLnd_nf are mostly 1), and this is desired.
+results$lu.to[results$lu.to=="RstLnd_NoAffor"]="OthNatLnd"
+results$lu.from[results$lu.from=="RstLnd_NoAffor"]="OthNatLnd"
+
+results <- results %>%
+  group_by(REGION,times,ns,lu.to,lu.from) %>%
+  summarise(value=sum(value)) %>%
+  ungroup()
+
+## END YW separate restored_nf age class
+
+
+# ------------------------------------------------------------------------------#
+# start biodiversity computation ------
 print("start biodiversity computation")
 
 # Get potential npp
@@ -345,7 +413,8 @@ restored <- results %>% filter(lu.to == "forest_new_ha") %>% group_by(REGION,tim
   dplyr::select(-c(forest_share,nonforest_share,used)) %>% arrange(ns,times) %>%
   spread(times,value) %>% drop_na()
 
-if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.before = `2010`)
+# if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.before = `2010`) #sometimes 2010 transition may not exist
+if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.after = `ns`)
 
 
 # Define simulation length
@@ -471,19 +540,21 @@ if (get_bii) {
                "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80"
-  )
+               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80","RstLnd","protected_priforest","protected_other","RstLnd_NoAffor")
+  # add the mapping for RstLnd_NoAffor
+
   bii_type <- c("grassland","other","cropland_other","forest_managed","forest_unmanaged","cropland_2Gbioen","built.up",
                 "abn_cropland_other","abn_grassland","abn_cropland_2Gbioen","abn_forest_managed",
                 "restored_f_10","restored_f_20","restored_f_30","restored_f_40","restored_f_50","restored_f_60","restored_f_70","restored_f_80",
                 "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                 "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                 "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-                "AbnMngFor_restored_10_f","AbnMngFor_restored_20_f","AbnMngFor_restored_30_f","AbnMngFor_restored_40_f","AbnMngFor_restored_50_f","AbnMngFor_restored_60_f","AbnMngFor_restored_70_f","AbnMngFor_restored_80_f"
-  )
+                "AbnMngFor_restored_10_f","AbnMngFor_restored_20_f","AbnMngFor_restored_30_f","AbnMngFor_restored_40_f","AbnMngFor_restored_50_f","AbnMngFor_restored_60_f","AbnMngFor_restored_70_f","AbnMngFor_restored_80_f","restored_nf","forest_unmanaged","other","restored_nf")
+
   lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=bii_type)
 
-  results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
+  #results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
+  results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha","RstLnd_NoAffor")) %>%
     group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value)) %>%
     rbind(natlnd_cons,afflnd_cons) %>%
     left_join(f_nf_share) %>%
@@ -518,11 +589,11 @@ if (get_bii) {
   # Calculate BII at the Simu and aggregate level
   bii_simu <- results_bii %>% mutate(value=value*f_nf_share) %>% mutate(pot_npp=10^6*pot_npp*value/global_npp) %>%
     mutate(score=value*BII,score_prod=pot_npp*BII) %>% group_by(REGION,times,ns) %>%
-    summarise(score=sum(score)/sum(value),score_prod=sum(score_prod)/sum(pot_npp),value=sum(value)) %>% mutate(ScenNr=scen)
+    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE),value=sum(value,na.rm = TRUE)) %>% mutate(ScenNr=scen)
 
   bii <- results_bii %>% mutate(value=value*f_nf_share) %>% mutate(pot_npp=10^6*pot_npp*value/global_npp) %>%
     mutate(score=value*BII,score_prod=pot_npp*BII) %>% group_by(times) %>%
-    summarise(score=sum(score)/sum(value),value=sum(value),score_prod=sum(score_prod)/sum(pot_npp)) %>%
+    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),value=sum(value,na.rm = TRUE),score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE)) %>%
     mutate(ScenNr=scen)
 
 } else {
@@ -591,14 +662,16 @@ if (get_csar){
                "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80")
+               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80","RstLnd_NoAffor")
 
   btc_type <- c("grassland","other","cropland_other","forest_managed","forest_unmanaged","cropland_2Gbioen","built_area",
                 "restored_10","restored_20","restored_30","restored_40","restored_50","restored_60","restored_70","restored_80",
                 "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                 "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                 "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-                "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80")
+                "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80","restored_nf")
+
+  # add the mapping for RstLnd_NoAffor
 
   csar_type <- c("pasture",NA,"annual_crops","forest_managed","primary","permanent_crops","urban",
                  "restored0to10Years","restored10to20Years","restored20to30Years","restored30to40Years",
@@ -606,13 +679,15 @@ if (get_csar){
                  "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                  "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                  "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-                 "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80")
+                 "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80","AbnCrpLnd_restored_30")
+  #YW: currently cannot find a good mapper for RstLnd_NoAffor; using "AbnCrpLnd_restored_30" or maybe "restored0to10Years"
 
 
   lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=btc_type)
   csar_lc_map <- tibble(LC_BTC=btc_type,LUclass=csar_type)
 
-  results_csar <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
+  #results_csar <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
+ results_csar <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha","RstLnd_NoAffor")) %>%
     group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value)) %>%
     rbind(natlnd_cons,afflnd_cons) %>%
     left_join(managed_forests) %>% left_join(built) %>% spread(lu.to,value) %>%
@@ -653,4 +728,6 @@ if (get_csar){
 }
 
 # Save ns and REGION level biodiv results ------
-saveRDS(list(bii_simu,bii,csar_simu,csar,results),paste0("Output/biodiversity_",project,"_",lab,".RData"))
+#saveRDS(list(bii_simu,bii,csar_simu,csar,downscalr_out0,downscalr_out,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for diagnosis: unload also intermediate LUC results
+saveRDS(list(bii_simu,bii,csar_simu,csar,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for normal pipeline runs: only unload important results
+
