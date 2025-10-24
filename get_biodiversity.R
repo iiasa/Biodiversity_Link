@@ -729,5 +729,5 @@ if (get_csar){
 
 # Save ns and REGION level biodiv results ------
 #saveRDS(list(bii_simu,bii,csar_simu,csar,downscalr_out0,downscalr_out,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for diagnosis: unload also intermediate LUC results
-saveRDS(list(bii_simu,bii,csar_simu,csar,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for normal pipeline runs: only unload important results
+saveRDS(list(bii_simu,bii,csar_simu,csar,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for normal pipeline runs: only unload important results
 
