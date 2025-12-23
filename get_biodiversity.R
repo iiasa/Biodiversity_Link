@@ -52,8 +52,10 @@ rebalance <- function(x){
 #' age classes of abandoned land
 get_age <- function(x,lnd){
 
+  land <- x
+
   x <- x %>% spread(times,value) %>% ungroup() %>% dplyr::select(-lu.to)
-  if (dim(x)[1] > 0) x <- x %>% mutate('2000'=0,'2010'=0) %>% relocate(c('2000','2010'),.before = '2020')
+  if (dim(x)[1] > 0) x <- x %>% mutate('2000'=0) %>% relocate(c('2000'),.before = '2010')
 
   if (dim(x)[1] > 0){
     # Get restoration from 0 to 10 years
@@ -61,6 +63,9 @@ get_age <- function(x,lnd){
     fin <- dim(x)[2]
     restored_10 <- x
     restored_10[,ini:fin] <- apply(x[,ini:fin],1,function(x) calc_lag(x,1)) %>% t()
+
+    # SRP: Correction for decreasing restored/abn land - part1: set to zero negative values
+    restored_10[,ini:fin] <- pmax(as.matrix(restored_10[, ini:fin]), 0)
 
     # Get remaining restoration classes
     restored_aux <- x
@@ -82,19 +87,28 @@ get_age <- function(x,lnd){
 
     # Combined the different age classes
     restoration <- restored_10 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_10=value) %>%
-      left_join(restored_20 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_20=value)) %>%
-      left_join(restored_30 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_30=value)) %>%
-      left_join(restored_40 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_40=value)) %>%
-      left_join(restored_50 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_50=value)) %>%
-      left_join(restored_60 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_60=value)) %>%
-      left_join(restored_70 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_70=value)) %>%
-      left_join(restored_80 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_80=value)) %>%
-      mutate(times=as.integer(times))
+      left_join(restored_20 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_20=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_30 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_30=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_40 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_40=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_50 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_50=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_60 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_60=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_70 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_70=value), by=c("REGION", "times", "ns")) %>%
+      left_join(restored_80 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_80=value), by=c("REGION", "times", "ns")) %>%
+      mutate(times=as.integer(times)) %>%
+      # SRP: Correction for decreasing restored/abn land part2: remove decreasing land proportionnally from the different age classes
+      left_join(land %>% select(-lu.to) %>%
+                  mutate(times=as.integer(times)), by=c("REGION", "times", "ns")) %>%
+      replace(is.na(.), 0) %>%
+      mutate(totabn = rowSums(across(contains("restored")), na.rm=TRUE),
+             diff= totabn - value) %>% select(-value) %>%
+      mutate_at(vars(contains("restored_")), ~ifelse(diff > 0, .-diff*./totabn, .)) %>%
+      select(-totabn, -diff)
 
     colnames(restoration)[4:11] <- str_c(lnd,"_",colnames(restoration)[4:11])
 
     # Aggregate and clean
     restoration <- restoration %>% gather(lu.to,value,-c( REGION,times,ns))
+
 
   } else {
     restoration <- tibble(REGION=NA, ns=NA, times=NA, lu.to=NA, value = NA)
@@ -108,7 +122,7 @@ get_age <- function(x,lnd){
 process_bii <- function(x){
 
   out <- x %>%
-    left_join(lc_map) %>% rename(LUclass=LC_BTC) %>% gather(pnv,f_nf_share,-c(REGION,times,ns,LC_TYPE,LUclass,value,pot_npp)) %>%
+    left_join(lc_map, by=c("LC_TYPE")) %>% rename(LUclass="LC_BTC") %>% gather(pnv,f_nf_share,-c(REGION,times,ns,LC_TYPE,LUclass,value,pot_npp)) %>%
     mutate(LUclass = recode_if(LUclass, pnv == "forest_share", "cropland_other" = "cropland_other_f"),
            LUclass = recode_if(LUclass, pnv == "nonforest_share", "cropland_other" = "cropland_other_nf"),
            LUclass = recode_if(LUclass, pnv == "forest_share", "built.up" = "built.up_f"),
@@ -167,7 +181,7 @@ process_bii <- function(x){
            LUclass = recode_if(LUclass, pnv == "nonforest_share", "AbnPltFor_restored_70" = "AbnPltFor_restored_70_nf"),
            LUclass = recode_if(LUclass, pnv == "forest_share", "AbnPltFor_restored_80" = "AbnPltFor_restored_80_f"),
            LUclass = recode_if(LUclass, pnv == "nonforest_share", "AbnPltFor_restored_80" = "AbnPltFor_restored_80_nf")) %>%
-    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>% left_join(bii_coefs) %>%
+    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>% left_join(bii_coefs, by=c("LUclass")) %>%
     mutate(value=ifelse(is.na(value),0,value)) %>% filter(value > 0, f_nf_share > 0)
 
   return(out)
@@ -176,12 +190,16 @@ process_bii <- function(x){
 # Function to add cSAR coefficients  and derive impacts
 process_csar <- function(x){
   out <- x %>%
-    left_join(lc_map) %>% left_join(csar_lc_map) %>%
-    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>% left_join(eco_map) %>%
-    left_join(csar_coefs) %>%
+    left_join(lc_map, by=c("LC_TYPE")) %>% left_join(csar_lc_map, by=c("LC_BTC")) %>%
+    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>%
+    left_join(eco_map,by=c("ns"), relationship = "many-to-many") %>%
+    left_join(csar_coefs, by=c("ecoregion", "LUclass")) %>%
+    mutate(CF = ifelse(LC_TYPE == "OthNatLnd", 0, CF),
+           LUclass=ifelse(LC_TYPE == "OthNatLnd", 0, CF)) %>%
     mutate(value=ifelse(is.na(value),0,value)) %>% filter(value > 0) %>%
-    mutate(CF=CF/10^3) %>%
-    mutate(extinctions=value*CF*simu_share_in_eco) %>% drop_na()
+    mutate(CF=CF/10^3)  %>%
+    mutate(value=value*simu_share_in_eco,
+           extinctions=value*CF) %>% drop_na()
 
 }
 
@@ -282,26 +300,29 @@ results <- results %>%
   rename(lu.to=lu.new) %>%
   select(REGION,times,ns,lu.to,value,lu.from)%>%
   group_by(REGION,times,ns,lu.to,lu.from) %>%
-  summarise(value=sum(value)) %>%
+  summarise(value=sum(value), .groups = "drop") %>%
   ungroup()
 
 ## YW: separate restored_nf age class-----
 ## The current method is to merge it directly into "OthNatLnd", so the RstLnd_nf will be identified as abandoned land as well, in the step "Get abandoned land"; further these restored_nf land will be mapped to "AbnCrpLnd_restored_nf" (mostly, because of f_nf_share for cells with RstLnd_nf are mostly 1), and this is desired.
-results$lu.to[results$lu.to=="RstLnd_NoAffor"]="OthNatLnd"
-results$lu.from[results$lu.from=="RstLnd_NoAffor"]="OthNatLnd"
+
+# SRP: keep the split, but will be treated as abnlnd
+#results$lu.to[results$lu.to=="RstLnd_NoAffor"]="OthNatLnd"
+#results$lu.from[results$lu.from=="RstLnd_NoAffor"]="OthNatLnd"
+# End SRP
 
 results <- results %>%
   group_by(REGION,times,ns,lu.to,lu.from) %>%
-  summarise(value=sum(value)) %>%
+  summarise(value=sum(value), .groups = "drop") %>%
   ungroup()
 
 ## END YW separate restored_nf age class
 
-
 # ------------------------------------------------------------------------------#
-# start biodiversity computation ------
+# Start biodiversity computation ------
 print("start biodiversity computation")
 
+# Land use rework ----
 # Get potential npp
 pot_npp <- readRDS(path("Input","pot_npp.RData")) %>%
   rename(ns=SimUID) %>% mutate(ns=as.factor(ns)) %>% dplyr::select(ns,pot_npp)
@@ -309,8 +330,7 @@ pot_npp <- readRDS(path("Input","pot_npp.RData")) %>%
 
 # Get built up areas
 built <- readRDS(path("Input","built_area.RData")) %>% rename(ns=SimUID) %>%
-  mutate(ns=as.factor(ns))
-
+  mutate(ns=as.factor(ns)) %>% left_join(results %>% select(REGION, ns) %>% unique(), by=c("ns"))
 
 # Get utilization
 g4m_utilization <- read.csv(str_glue("area_harvest_map_{project}_{lab}_{scen1}_{scen3}_{scen2}.csv")) %>%
@@ -319,60 +339,86 @@ g4m_utilization <- read.csv(str_glue("area_harvest_map_{project}_{lab}_{scen1}_{
 g4m_mapping <- readRDS("g4m_mapping.RData")[[1]] %>% rename(g4m_id=g4m_05_id) %>% expand_grid(seq(2000,2100,10)) %>%
   rename(times=`seq(2000, 2100, 10)`)
 
-managed_forests <- g4m_mapping %>% left_join(g4m_utilization) %>% drop_na() %>% dplyr::select(-g4m_id) %>%
+managed_forests <- g4m_mapping %>% left_join(g4m_utilization, by=c("g4m_id", "times")) %>% drop_na() %>% dplyr::select(-g4m_id) %>%
   rename(ns=SimUID)
 
 # Values for 2020
 initial <- results %>% filter(times==2010)
 
+# SRP: for later checks - total lu before update
+total_lu <- results %>% filter(value>0) %>%
+  group_by(REGION, times, lu.to) %>%
+  summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
+  ungroup() %>%
+  pivot_wider(names_from = "lu.to") %>%
+  left_join(built %>% group_by(REGION) %>% summarise(built_area = sum(built_area, na.rm=TRUE)),
+            by=c("REGION")) %>%
+  mutate(total = rowSums(across(-c(REGION, times)), na.rm=TRUE)) %>%
+  replace(is.na(.),0)
 
+## AbnLnd ----
 #' Get abandoned land - !!! for now all classes are bundled into abandoned land------
 #' since in GLOBIOM Trunk they are not differentiated. The BII and CFs are then
 #' given by the average values of abandoned cropland and grassland
-
 natlnd <- results %>% filter(lu.to == "OthNatLnd") %>%
-  tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(REGION,times,ns) %>% summarise(value=sum(value))
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>%
+  replace_na(list(value=0)) %>%
+  group_by(REGION,times,ns) %>%
+  summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>% ungroup()
 
-natlnd_converted <- results %>% filter(lu.from == "RES", lu.to != "RES") %>%
-  tidyr::complete(times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(times,ns) %>% summarise(value=sum(value)) %>%
-  group_by(times,ns) %>% summarise(value=cumsum(value))
+# SRP: There is no RES category.
+# Filter retained for backward compatibility; remove if unnecessary.
+natlnd_converted <- results %>% filter(lu.from %in% c("OthNatLnd","RES"), !(lu.to %in% c("OthNatLnd","RES"))) %>%
+  tidyr::complete(times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
+  group_by(times,ns) %>% summarise(value=sum(value, na.rm = TRUE), .groups = "drop") %>% ungroup() %>%
+  group_by(ns) %>% reframe(times=times,value=cumsum(value)) %>% ungroup()
 
 # Abandoned cropland
 abn_crplnd <- results %>% filter(lu.from == "CrpLnd", lu.to == "OthNatLnd") %>%
-  tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(REGION,ns,lu.from) %>% summarise(times=times,value=cumsum(value)) %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>%
   mutate(lu.to="AbnCrpLnd") %>% relocate(times, .before=ns)
 
 # Abandoned grassland
 abn_grslnd <- results %>% filter(lu.from == "Grass", lu.to == "OthNatLnd") %>%
-  tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(REGION,ns,lu.from) %>% summarise(times=times,value=cumsum(value)) %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>%
   mutate(lu.to="AbnGrsLnd") %>% relocate(times, .before=ns)
 
 # Abandoned forest plantations
-abn_pltfor <- results %>% filter(lu.from == "PltFor", lu.to == "OthNatLnd")  %>%
-  tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(REGION,ns,lu.from) %>% summarise(times=times,value=cumsum(value)) %>%
+abn_pltfor <- results %>% filter(lu.from == "PltFor", lu.to == "OthNatLnd") %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>%
   mutate(lu.to="AbnPltFor") %>% relocate(times, .before=ns)
 
 # Abandoned managed forests
-abn_mngfor <- results %>% filter(lu.from %in% c("forest_old_ha","forest_new_ha"), lu.to == "OthNatLnd")  %>%
-  tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-  group_by(REGION,ns,lu.from) %>% summarise(times=times,value=cumsum(value)) %>%
+abn_mngfor <- results %>% filter(lu.from %in% c("forest_old_ha","forest_new_ha"),lu.to == "OthNatLnd")  %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns, lu.from) %>% reframe(times=times,value=cumsum(value)) %>%
   mutate(lu.from="forest",lu.to="AbnMngFor") %>% relocate(times, .before=ns) %>%
-  group_by(REGION,times,ns,lu.from,lu.to) %>% summarise(value=sum(value))
+  group_by(REGION,times,ns,lu.from,lu.to) %>% summarise(value=sum(value), .groups = "drop")
 
 # Merge land covers and correct OthNatLnd
 natlnd_aux <- natlnd %>% rename(OthNatLnd=value) %>%
-  left_join(abn_crplnd %>% rename(AbnCrpLnd=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from))) %>%
-  left_join(abn_grslnd %>% rename(AbnGrsLnd=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from))) %>%
-  left_join(abn_pltfor %>% rename(AbnPltFor=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from))) %>%
-  left_join(abn_mngfor %>% rename(AbnMngFor=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from))) %>%
-  left_join(natlnd_converted %>% rename(converted=value) %>% ungroup) %>%
+  left_join(abn_crplnd %>% rename(AbnCrpLnd=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from)), by=c("REGION", "times", "ns")) %>%
+  left_join(abn_grslnd %>% rename(AbnGrsLnd=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from)), by=c("REGION", "times", "ns")) %>%
+  left_join(abn_pltfor %>% rename(AbnPltFor=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from)), by=c("REGION", "times", "ns")) %>%
+  left_join(abn_mngfor %>% rename(AbnMngFor=value) %>% ungroup %>% dplyr::select(-c(lu.to,lu.from)), by=c("REGION", "times", "ns")) %>%
+  left_join(natlnd_converted %>% rename(converted=value) %>% ungroup, by=c("times", "ns")) %>%
   replace_na(list(AbnCrpLnd=0,AbnGrsLnd=0,AbnPltFor=0,AbnMngFor=0,converted=0)) #%>%
-  #mutate(balance=OthNatLnd-(AbnCrpLnd+AbnGrsLnd+AbnPltFor+AbnMngFor))
+  # select(REGION, times, ns, converted, contains("Abn"), OthNatLnd) %>%
+  # mutate(balance=OthNatLnd-(AbnCrpLnd+AbnGrsLnd+AbnPltFor+AbnMngFor))
 
 # Rebalance cells with more abandoned land than natlnd
 ini_col <- 4
@@ -383,7 +429,7 @@ natlnd_aux[,ini_col:ncols] <- apply(natlnd_aux[,ini_col:ncols],1,function(x) reb
 # Combined natlnd and abandoned areas
 natlnd_cons <- natlnd_aux %>% dplyr::select(-converted) %>%
   mutate(OthNatLnd=OthNatLnd-(AbnCrpLnd+AbnGrsLnd+AbnPltFor+AbnMngFor)) %>%
-  gather(lu.to,value,-c(REGION,times,ns)) #%>% replace(. < 0, 0)
+  gather(lu.to,value,-c(REGION,times,ns))#%>% replace(. < 0, 0)
 
 # Compute age classes of abandoned areas
 r_crplnd <- get_age(natlnd_cons %>% filter(lu.to=="AbnCrpLnd"),"AbnCrpLnd")
@@ -393,25 +439,108 @@ r_mngfor <- get_age(natlnd_cons %>% filter(lu.to=="AbnMngFor"),"AbnMngFor")
 
 # Merge results
 natlnd_cons <- natlnd_cons %>% filter(lu.to=="OthNatLnd") %>%
-  rbind(r_crplnd,r_grslnd,r_pltfor,r_mngfor) %>% drop_na()
+  rbind(r_crplnd,r_grslnd,r_pltfor,r_mngfor) %>% drop_na() %>%
+  filter(times != 2000)
 
+# SRP check: total abnlnd + othnatlnd = initial othnatlnd
+totabn <- natlnd_cons %>%
+  filter(value >0) %>%
+  pivot_wider(names_from = "lu.to") %>%
+  mutate(tot=rowSums(across(c(contains("restored"),"OthNatLnd")),
+                     na.rm=TRUE)) %>%
+  group_by(REGION, times) %>%
+  summarise_at(vars(-c(ns)), sum)
 
+test <- all.equal(totabn$tot,total_lu$OthNatLnd)
+if (!isTRUE(test)) warning(paste("Abn: total abnlnd + othnatlnd != initial othnatlnd",test))
+
+## Restored_nf ----
+## SRP: Treat RstLnd_NoAffor as AbnLnd but in separate categories (restored_nf_XXXlnd)
+# RstLnd_NoAffor from cropland
+restored_nf_crplnd <- results %>% filter(lu.from == "CrpLnd", lu.to == "RstLnd_NoAffor") %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>% ungroup() %>%
+  mutate(lu.to="restored_nf_CrpLnd") %>% relocate(times, .before=ns) %>% select(-lu.from) %>% ungroup()
+
+# RstLnd_NoAffor from grassland
+restored_nf_grslnd <- results %>% filter(lu.from == "Grass", lu.to == "RstLnd_NoAffor") %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>% ungroup() %>%
+  mutate(lu.to="restored_nf_GrsLnd") %>% relocate(times, .before=ns) %>% select(-lu.from) %>% ungroup()
+
+# RstLnd_NoAffor from forest plantations
+restored_nf_pltfor <- results %>% filter(lu.from == "PltFor", lu.to == "RstLnd_NoAffor") %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns,lu.from) %>% reframe(times=times,value=cumsum(value)) %>% ungroup() %>%
+  mutate(lu.to="restored_nf_PltFor") %>% relocate(times, .before=ns) %>% select(-lu.from) %>% ungroup()
+
+# RstLnd_NoAffor from managed forests - should be empty
+restored_nf_mngfor <- results %>% filter(lu.from %in% c("forest_old_ha","forest_new_ha"),lu.to == "RstLnd_NoAffor")  %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0))%>%
+  group_by(REGION,ns, lu.from) %>% reframe(times=times,value=cumsum(value)) %>% ungroup() %>%
+  mutate(lu.from="forest",lu.to="restored_nf_MngFor") %>% relocate(times, .before=ns) %>%
+  group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value), .groups = "drop") %>% ungroup()
+
+# Merge land covers
+restored_nf <- rbind(restored_nf_mngfor,restored_nf_pltfor, restored_nf_grslnd, restored_nf_crplnd)
+# select(REGION, times, ns, converted, contains("Abn"), OthNatLnd) %>%
+# mutate(balance=OthNatLnd-(AbnCrpLnd+AbnGrsLnd+AbnPltFor+AbnMngFor))
+
+# Compute age classes of RstLnd_NoAffor areas
+r_nf_crplnd <- get_age(restored_nf %>% filter(lu.to=="restored_nf_CrpLnd"),"restored_nf_CrpLnd")
+r_nf_grslnd <- get_age(restored_nf %>% filter(lu.to=="restored_nf_GrsLnd"),"restored_nf_GrsLnd")
+r_nf_pltfor <- get_age(restored_nf %>% filter(lu.to=="restored_nf_PltFor"),"restored_nf_PltFor")
+r_nf_mngfor <- get_age(restored_nf %>% filter(lu.to=="restored_nf_MngFor"),"restored_nf_MngFor")
+
+restored_nf <- rbind(r_nf_crplnd,r_nf_grslnd,r_nf_pltfor,r_nf_mngfor) %>% drop_na() %>%
+  filter(times != 2000) %>%
+  mutate(lu.to = paste0(gsub("restored_nf_","",lu.to),"_nf"))
+
+# SRP check: total restored_nf = initial RstLnd_NoAffor
+totrest <- restored_nf %>% ungroup() %>%
+  pivot_wider(names_from = "lu.to", values_from="value") %>%
+  mutate(RstLnd_NoAffor = rowSums(across(contains("restored")), na.rm=TRUE))%>%
+  group_by(REGION, times) %>%
+  summarise_at(vars(-c(ns)), sum) %>% ungroup()
+
+if("RstLnd_NoAffor" %in% colnames(total_lu)){
+  test <- all.equal(totrest$RstLnd_NoAffor,total_lu$RstLnd_NoAffor)
+  if (!isTRUE(test)) warning(paste("Rst: RstLnd_NoAffor != initial RstLnd_NoAffor -", test))
+}
+
+## Afforestation ----
 #' Get forest restored land  - for now afforestation areas that are not managed along ----
 #' the simulation period are considered restoration.
 
 # Get forest and non-forest shares
-f_nf_share <- readRDS(path("input","forest_share.RData")) %>% rename(ns=SimUID) %>% mutate(ns=as.factor(ns))
+f_nf_share <- readRDS(path("input","forest_share.RData")) %>% rename(ns=SimUID) %>%
+  mutate(ns=as.character(ns)) %>% ungroup()
 f_nf_share$forest_share[which(f_nf_share$forest_share > 1)] <- 1
 f_nf_share$nonforest_share[which(f_nf_share$nonforest_share < 0)] <- 0
 
 # Get afforestation areas where the potential natural vegetation is forest and
 # areas are not managed along the simulation period
 
-restored <- results %>% filter(lu.to == "forest_new_ha") %>% group_by(REGION,times,ns) %>%
-  summarise(value=sum(value)) %>% left_join(f_nf_share) %>% left_join(managed_forests) %>%
-  mutate(value=value*forest_share) %>% filter(value > 0, used==0) %>%
+restored <- results %>% filter(lu.to == "forest_new_ha") %>% group_by(REGION,times, ns) %>%
+  summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
+  left_join(f_nf_share, by="ns") %>% left_join(managed_forests, by=c("times", "ns")) %>%
+  # SRP: Remove forest_share dimension because this leads to increase in unmanaged forest
+  # mutate(value=value*forest_share)%>%
+  filter(value > 0, used==0) %>%
   dplyr::select(-c(forest_share,nonforest_share,used)) %>% arrange(ns,times) %>%
-  spread(times,value) %>% drop_na()
+  spread(times,value) %>% #drop_na()
+  replace(is.na(.), 0)
+
+land <- restored %>%
+  pivot_longer(cols = -c(REGION, ns), names_to="times")
 
 # if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.before = `2010`) #sometimes 2010 transition may not exist
 if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.after = `ns`)
@@ -425,6 +554,9 @@ if (dim(restored)[1] > 0){
   # Get restoration from 0 to 10 years
   restored_10 <- restored
   restored_10[,ini_col:ncols] <- apply(restored[,ini_col:ncols],1,function(x) calc_lag(x,1)) %>% t()
+
+  # SRP Correction for decreasing restored/abn land - Part 1: set to zero negative values
+  restored_10[,ini_col:ncols] <- pmax(as.matrix(restored_10[, ini_col:ncols]), 0)
 
   # Get remaining restoration classes
   restored_aux <- restored
@@ -446,22 +578,33 @@ if (dim(restored)[1] > 0){
 
   # Combined the different age classes
   restoration <- restored_10 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_10=value) %>%
-    left_join(restored_20 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_20=value)) %>%
-    left_join(restored_30 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_30=value)) %>%
-    left_join(restored_40 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_40=value)) %>%
-    left_join(restored_50 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_50=value)) %>%
-    left_join(restored_60 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_60=value)) %>%
-    left_join(restored_70 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_70=value)) %>%
-    left_join(restored_80 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_80=value)) %>%
-    mutate(times=as.integer(times))
+    left_join(restored_20 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_20=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_30 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_30=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_40 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_40=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_50 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_50=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_60 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_60=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_70 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_70=value), by=c("REGION", "ns", "times")) %>%
+    left_join(restored_80 %>% gather(times,value,-c(REGION,ns)) %>% rename(restored_80=value), by=c("REGION", "ns", "times")) %>%
+    mutate(times=as.integer(times))%>%
+    # SRP Correction for decreasing restored/abn land - Part 2: remove decreasing land from age classes
+    left_join(land %>%
+                mutate(times=as.integer(times)), by=c("REGION", "ns", "times")) %>%
+    replace(is.na(.), 0) %>%
+    mutate(totabn = rowSums(across(contains("restored")), na.rm=TRUE),
+           diff= totabn - value) %>% select(-value) %>%
+    mutate_at(vars(contains("restored_")), ~ifelse(diff > 0, .-diff*./totabn, .)) %>%
+    select(-totabn, -diff)
 
   # Afforestation area
   afflnd <- results %>% filter(lu.to == "forest_new_ha") %>%
-    tidyr::complete(REGION,times,ns,lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-    group_by(REGION,times,ns) %>% summarise(value=sum(value))
+    filter(value > 0) %>%
+    tidyr::complete(REGION = unique(results$REGION),
+                    times  = unique(results$times),
+                    ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
+    group_by(REGION,times,ns) %>% summarise(value=sum(value), .groups = "drop")
 
   afflnd_aux <- afflnd %>% rename(forest_new_ha=value) %>%
-    left_join(restoration) %>% replace(is.na(.), 0) %>%
+    left_join(restoration, by=c("REGION", "ns", "times")) %>% replace(is.na(.), 0) %>%
     mutate(forest_new_ha=forest_new_ha-rowSums(across(starts_with("restored")), na.rm = T))
 
   # Aggregate and clean
@@ -472,7 +615,17 @@ if (dim(restored)[1] > 0){
     mutate(lu.to="forest_new_ha",value=0)
 }
 
+# SRP check: total restored + forest_new_ha = initial forest_new_ha
+totcons <- afflnd_cons %>%
+  filter(value > 0) %>%
+  pivot_wider(names_from = "lu.to") %>%
+  mutate(tot=rowSums(across(c(contains("restored"),"forest_new_ha")),
+                     na.rm=TRUE)) %>%
+  group_by(REGION, times) %>%
+  summarise_at(vars(-c(ns)), sum)
 
+test <- all.equal(totcons$tot,total_lu$forest_new_ha)
+if (!isTRUE(test)) warning(paste("Aff: total restored + forest_new_ha != initial forest_new_ha -", test))
 
 # Get BII indicator ------
 if (get_bii) {
@@ -510,17 +663,20 @@ if (get_bii) {
   restored_coef <- expand.grid(lurest,age,ecosystem) %>% rename(LC_TYPE = Var1, Age = Var2, Eco = Var3) %>%
     mutate(class=str_c(LC_TYPE,"_restored_",Age,"_",Eco)) %>%
     filter(! (LC_TYPE=="AbnMngFor" & Eco=="nf")) %>%
-    left_join(land_map) %>% mutate(LUclass=str_c(LUclass,"_",Eco)) %>%
+    left_join(land_map, by=c("LC_TYPE")) %>% mutate(LUclass=str_c(LUclass,"_",Eco)) %>%
     mutate(LUclass = recode(LUclass, "forest_managed_f" = "forest_managed")) %>%
-    left_join(bii_coefs) %>% left_join(org_map) %>% mutate(BII_ORG=ifelse(BII<BII_ORG*.8,BII_ORG*.8,BII_ORG)) %>%
+    left_join(bii_coefs, by="LUclass") %>% left_join(org_map, by="Eco") %>% mutate(BII_ORG=ifelse(BII<BII_ORG*.8,BII_ORG*.8,BII_ORG)) %>%
     mutate(BII_FINAL= ifelse( Age >= 20 & Age <= 70 , BII + (Age - 10) /(70 - 5) * (BII_ORG - BII),
                               ifelse( Age > 70, BII_ORG, BII))) %>%
     dplyr::select(class,BII_FINAL,weightSum) %>%
     rename(LUclass=class,BII=BII_FINAL)
 
+  restored_coef_noAff <- restored_coef %>% filter(str_detect(LUclass, "Abn") & str_detect(LUclass, "_nf")) %>%
+    mutate(LUclass = gsub("Abn","", LUclass))
+
   # Compute coefficients according to age of restoration
   aff_restored <- expand.grid("restored_f",age) %>% rename(LUclass = Var1, Age = Var2) %>%
-    mutate(class=str_c(LUclass,"_",Age)) %>% left_join(bii_coefs) %>%
+    mutate(class=str_c(LUclass,"_",Age)) %>% left_join(bii_coefs, by="LUclass") %>%
     mutate(BII_INI=bii_coefs$BII[which(bii_coefs$LUclass=="forest_managed")]) %>%
     mutate(BII_FINAL= ifelse( Age >= 20 & Age <= 70 , BII_INI + (Age - 10) /(70 - 5) * (BII - BII_INI),
                              ifelse( Age > 70, BII, BII_INI))) %>%
@@ -528,7 +684,7 @@ if (get_bii) {
     rename(LUclass=class,BII=BII_FINAL)
 
   ## Merge bii_coefs coeficients-----
-  bii_coefs <- bii_coefs %>% rbind(restored_coef,aff_restored)
+  bii_coefs <- bii_coefs %>% rbind(restored_coef,aff_restored,restored_coef_noAff)
 
   ## Get mapping between GLOBIOM land cover types and BII land cover types
   lc_map <- readRDS(path("Input","BTC_LC_MAP.RData"))
@@ -540,7 +696,8 @@ if (get_bii) {
                "AbnCrpLnd_restored_10","AbnCrpLnd_restored_20","AbnCrpLnd_restored_30","AbnCrpLnd_restored_40","AbnCrpLnd_restored_50","AbnCrpLnd_restored_60","AbnCrpLnd_restored_70","AbnCrpLnd_restored_80",
                "AbnGrsLnd_restored_10","AbnGrsLnd_restored_20","AbnGrsLnd_restored_30","AbnGrsLnd_restored_40","AbnGrsLnd_restored_50","AbnGrsLnd_restored_60","AbnGrsLnd_restored_70","AbnGrsLnd_restored_80",
                "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
-               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80","RstLnd","protected_priforest","protected_other","RstLnd_NoAffor")
+               "AbnMngFor_restored_10","AbnMngFor_restored_20","AbnMngFor_restored_30","AbnMngFor_restored_40","AbnMngFor_restored_50","AbnMngFor_restored_60","AbnMngFor_restored_70","AbnMngFor_restored_80",
+               "RstLnd","protected_priforest","protected_other","RstLnd_NoAffor")
   # add the mapping for RstLnd_NoAffor
 
   bii_type <- c("grassland","other","cropland_other","forest_managed","forest_unmanaged","cropland_2Gbioen","built.up",
@@ -551,31 +708,77 @@ if (get_bii) {
                 "AbnPltFor_restored_10","AbnPltFor_restored_20","AbnPltFor_restored_30","AbnPltFor_restored_40","AbnPltFor_restored_50","AbnPltFor_restored_60","AbnPltFor_restored_70","AbnPltFor_restored_80",
                 "AbnMngFor_restored_10_f","AbnMngFor_restored_20_f","AbnMngFor_restored_30_f","AbnMngFor_restored_40_f","AbnMngFor_restored_50_f","AbnMngFor_restored_60_f","AbnMngFor_restored_70_f","AbnMngFor_restored_80_f","restored_nf","forest_unmanaged","other","restored_nf")
 
-  lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=bii_type)
+  # SRP: add mapping for restored_nf categories
+  lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=bii_type) %>%
+    rbind(data.frame(LC_TYPE=(restored_nf %>% select(lu.to) %>% unique())$lu.to,
+                     LC_BTC=(restored_nf %>% select(lu.to) %>% unique())$lu.to ))
 
   #results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
   results_bii <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha","RstLnd_NoAffor")) %>%
-    group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value)) %>%
-    rbind(natlnd_cons,afflnd_cons) %>%
-    left_join(f_nf_share) %>%
-    left_join(managed_forests) %>% left_join(built) %>% spread(lu.to,value) %>%
+    group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value), .groups = "drop") %>% ungroup() %>%
+    rbind(natlnd_cons,afflnd_cons,restored_nf) %>% spread(lu.to,value) %>%
+    replace(is.na(.), 0)  %>%    left_join(f_nf_share, by="ns")  %>%
+    left_join(managed_forests, by=c("times","ns")) %>% full_join(built %>% filter(ns %in% results$ns), by=c("REGION","ns")) %>%
     mutate(forest_managed=used*(forest_new_ha+forest_old_ha),
            forest_unmanaged=(1-used)*(forest_new_ha+forest_old_ha)) %>%
     dplyr::select(-c(used,forest_new_ha,forest_old_ha)) %>%
     gather(LC_TYPE,value,-c(REGION,times,ns,forest_share,nonforest_share))
 
+  # SRP checks for consistency with initial LU
+  country_res <- results_bii %>%
+    filter(value>0) %>%
+    group_by(REGION,times,LC_TYPE) %>%
+    summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
+    ungroup()%>% pivot_wider(names_from = "LC_TYPE")%>%
+    mutate(total = rowSums(across(-c(REGION, times)), na.rm=TRUE),
+           totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE),
+           totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+           totresnoaff = rowSums(across(ends_with("nf")), na.rm=TRUE))
 
-  initial_bii <- initial %>% group_by(REGION,times,ns,lu.from) %>% summarise(value=sum(value)) %>%
-    left_join(f_nf_share) %>%
-    left_join(managed_forests) %>% left_join(built) %>% spread(lu.from,value) %>%
+  test <- all.equal(country_res$total,total_lu$total)
+  if (!isTRUE(test)) warning(paste("BII: total != initial total -", test))
+  #testthat::expect_equal(country_res$total-country_res$built_area, total_lu$total)
+
+  test <- all.equal(country_res$totforres,total_lu$forest_new_ha+total_lu$forest_old_ha)
+  if (!isTRUE(test)) warning(paste("BII: forest unmanaged/managed + afforestation != initial forest_new_ha + forest_old_ha -",test))
+
+  test <- all.equal(country_res$totabnoth,total_lu$OthNatLnd)
+  if (!isTRUE(test)) warning(paste("BII: OthNatLnd + AbnLnd != initial OthNatLnd -"),test)
+
+  initial_bii <- initial %>%
+    group_by(REGION,times,ns,lu.from) %>%
+    summarise(value=sum(value, na.rm=TRUE), .groups="drop") %>%
+    left_join(f_nf_share, by="ns") %>%
+    left_join(managed_forests, by=c("times","ns")) %>%
+    full_join(built %>% filter(ns %in% results$ns), by=c("REGION","ns")) %>% spread(lu.from,value) %>%
     mutate(forest_managed=used*(forest_old_ha),forest_unmanaged=(1-used)*(forest_old_ha)) %>%
     dplyr::select(-c(used,forest_old_ha)) %>%
     gather(LC_TYPE,value,-c(REGION,times,ns,forest_share,nonforest_share)) %>%
     mutate(times=2000)
 
+  # SRP: LU output at the end of computations
+  final_lu_bii <- results_bii %>%
+    filter(times!= 2000) %>% rbind(initial_bii) %>%
+    filter(!(LC_TYPE %in% c("forest_new_ha","forest_old_ha"))) %>%
+    filter(value > 0) %>%
+    group_by(REGION,times,LC_TYPE) %>%
+    summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
+    ungroup()
 
-  results_bii <- results_bii %>% rbind(initial_bii) %>%
-    left_join(pot_npp) %>% replace(is.na(.),0)
+  # SRP check: constant over time
+  country_res <- final_lu_bii %>%
+    group_by(REGION,times) %>%
+    summarise(value=sum(value, na.rm=TRUE), .groups="drop") %>%
+    ungroup()
+
+  test <- all.equal(country_res[1,"value"], country_res[2,"value"])
+  if (!isTRUE(test)) warning(paste("BII: Not constant over time -",test ))
+
+  results_bii <- results_bii %>%
+    filter(times!= 2000) %>% rbind(initial_bii) %>%
+    left_join(pot_npp, by="ns") %>% replace(is.na(.),0) %>%
+    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>%
+    filter(value!=0)
 
   global_npp <- results_bii %>% filter(times==2010) %>% mutate(pot_npp=pot_npp*value) %>%
     group_by() %>% summarise(pot_npp=sum(pot_npp)) %>% pull()
@@ -589,12 +792,19 @@ if (get_bii) {
   # Calculate BII at the Simu and aggregate level
   bii_simu <- results_bii %>% mutate(value=value*f_nf_share) %>% mutate(pot_npp=10^6*pot_npp*value/global_npp) %>%
     mutate(score=value*BII,score_prod=pot_npp*BII) %>% group_by(REGION,times,ns) %>%
-    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE),value=sum(value,na.rm = TRUE)) %>% mutate(ScenNr=scen)
+    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),
+              score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE),
+              value=sum(value,na.rm = TRUE), .groups = "drop") %>% mutate(ScenNr=scen)
 
   bii <- results_bii %>% mutate(value=value*f_nf_share) %>% mutate(pot_npp=10^6*pot_npp*value/global_npp) %>%
     mutate(score=value*BII,score_prod=pot_npp*BII) %>% group_by(times) %>%
-    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),value=sum(value,na.rm = TRUE),score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE)) %>%
+    summarise(score=sum(score,na.rm = TRUE)/sum(value,na.rm = TRUE),
+              value=sum(value,na.rm = TRUE),
+              score_prod=sum(score_prod,na.rm = TRUE)/sum(pot_npp,na.rm = TRUE)) %>%
     mutate(ScenNr=scen)
+
+  test <- all.equal((bii[c(2:11),"value"])$value, total_lu$total)
+  if (!isTRUE(test)) warning(paste("BII: bii total != initial total -", test))
 
 } else {
   bii_simu <- bii <- NULL
@@ -633,13 +843,17 @@ if (get_csar){
   ## Compute coefficients for abandoned areas-----
   restored_coef <- expand.grid(lurest,age,ecoreg) %>% rename(LC_TYPE = Var1, Age = Var2, ecoregion = Var3) %>%
     mutate(class=str_c(LC_TYPE,"_restored_",Age)) %>%
-    left_join(land_map) %>% left_join(csar_coefs) %>%
+    left_join(land_map, by=c("LC_TYPE")) %>% left_join(csar_coefs, by=c("ecoregion", "LUclass")) %>%
     mutate(CF_ORG=CF*0.2) %>% mutate(CF_FINAL=
                                        ifelse( Age >= 20 & Age <= 70 , CF - ((Age - 10)/(70-5))*(CF - 0.2*CF),
                                                ifelse(Age > 70 , CF_ORG, CF))) %>%
     dplyr::select(ecoregion,class,CF_FINAL) %>% rename(LUclass=class,CF=CF_FINAL)
 
-  csar_coefs <- csar_coefs %>% rbind(restored_coef)
+  # SRP: add coeffs for restored_nf
+  restored_coef_noAff <- restored_coef %>% filter(str_detect(LUclass, "Abn")) %>%
+    mutate(LUclass = paste0(gsub("Abn","", LUclass), "_nf"))
+
+  csar_coefs <- csar_coefs %>% rbind(restored_coef,restored_coef_noAff)
 
   # Get simu to ecoregion map
   eco_map <- readRDS(path("Input","ecoregions_share.RData")) %>% rename(ns=SimUID) %>%
@@ -683,51 +897,103 @@ if (get_csar){
   #YW: currently cannot find a good mapper for RstLnd_NoAffor; using "AbnCrpLnd_restored_30" or maybe "restored0to10Years"
 
 
-  lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=btc_type)
-  csar_lc_map <- tibble(LC_BTC=btc_type,LUclass=csar_type)
+  lc_map <- tibble(LC_TYPE = lc_type,LC_BTC=btc_type)%>%
+    rbind(data.frame(LC_TYPE=(restored_nf %>% select(lu.to) %>% unique())$lu.to,
+                     LC_BTC=(restored_nf %>% select(lu.to) %>% unique())$lu.to ))
+  csar_lc_map <- tibble(LC_BTC=btc_type,LUclass=csar_type)%>%
+    rbind(data.frame(LC_BTC=(restored_nf %>% select(lu.to) %>% unique())$lu.to,
+                     LUclass=(restored_nf %>% select(lu.to) %>% unique())$lu.to ))
 
   #results_csar <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha")) %>%
  results_csar <- results %>% filter(! lu.to %in% c("OthNatLnd","forest_new_ha","RstLnd_NoAffor")) %>%
-    group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value)) %>%
-    rbind(natlnd_cons,afflnd_cons) %>%
-    left_join(managed_forests) %>% left_join(built) %>% spread(lu.to,value) %>%
+    group_by(REGION,times,ns,lu.to) %>% summarise(value=sum(value), .groups = "drop") %>% ungroup() %>%
+    rbind(natlnd_cons,afflnd_cons,restored_nf) %>%
+    left_join(managed_forests, by=c("times","ns")) %>%
+    left_join(built, by=c("REGION","ns")) %>% spread(lu.to,value) %>%
+    replace(is.na(.), 0)  %>%
     mutate(forest_managed=used*(forest_new_ha+forest_old_ha),forest_unmanaged=(1-used)*(forest_new_ha+forest_old_ha)) %>%
-    dplyr::select(-used) %>%
+    dplyr::select(-c(used,forest_new_ha,forest_old_ha)) %>%
     gather(LC_TYPE,value,-c(REGION,times,ns))
 
-  initial_csar <- initial %>% group_by(REGION,times,ns,lu.from) %>% summarise(value=sum(value)) %>%
-    left_join(managed_forests) %>% left_join(built) %>% spread(lu.from,value) %>%
+ # SRP checks for consistency with initial lu
+ country_res <- results_csar %>%
+   filter(value>0) %>%
+   group_by(REGION,times,LC_TYPE) %>%
+   summarise(value=sum(value, na.rm=TRUE), .groups="drop") %>%
+   ungroup()%>% pivot_wider(names_from = "LC_TYPE")%>%
+   mutate(total = rowSums(across(-c(REGION, times)), na.rm=TRUE),
+          totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE),
+          totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+          totresnoaff = rowSums(across(ends_with("nf")), na.rm=TRUE))
+
+ test <- all.equal(country_res$total,total_lu$total)
+ if (!isTRUE(test)) warning(paste("Csar: total != initial total -"),test)
+
+ test <- all.equal(country_res$totforres,total_lu$forest_new_ha+total_lu$forest_old_ha)
+ if (!isTRUE(test)) warning(paste("Csar: restored + forest_new_ha != initial forest_new_ha -",test))
+
+ test <- all.equal(country_res$totabnoth,total_lu$OthNatLnd)
+ if (!isTRUE(test)) warning(paste("Csar: AbnLnd + OthNatLnd != initial OthNatLnd -", test))
+
+ initial_csar <- initial %>% group_by(REGION,times,ns,lu.from) %>% summarise(value=sum(value)) %>%
+    left_join(managed_forests, by=c("times","ns")) %>%
+    left_join(built, by=c("REGION","ns")) %>% spread(lu.from,value) %>%
     mutate(forest_managed=used*(forest_old_ha),forest_unmanaged=(1-used)*(forest_old_ha)) %>%
     dplyr::select(-used) %>%
     gather(LC_TYPE,value,-c(REGION,times,ns)) %>%
     mutate(times=2000)
 
-  results_csar <- results_csar %>% rbind(initial_csar)
+ # SRP: land use output at the end of computations
+  final_lu_csar <- results_csar %>% rbind(initial_csar) %>%
+    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>%
+    filter(value >0) %>%
+    group_by(REGION,times,LC_TYPE) %>%
+    summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
+    ungroup()
 
   # Merge coefficients
-  results_csar <- results_csar %>% group_by(times) %>% group_split()
+  results_csar <- results_csar %>% rbind(initial_csar) %>%
+    filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>%
+    filter(value >0) %>% group_by(times) %>% group_split()
 
   # Add coefficients and compute impact
   results_csar <- results_csar %>% map_df(~process_csar(.)) %>% rbind
 
   # Calculate extinctions at ecoregion level
-  csar_simu <- results_csar %>% filter(! ecoregion %in% my_excluded_ers) %>%
+  csar_simu <- results_csar %>%
+    filter(! ecoregion %in% my_excluded_ers) %>%
     group_by(REGION,times,ns) %>%
-    summarise(extinctions=sum(extinctions)) %>%
+    summarise_at(vars(extinctions,value), sum) %>%
     mutate(score=1-extinctions) %>% mutate(score=ifelse(score <0,0,score)) %>% mutate(ScenNr=scen)
 
   # Calculate total extinctions
-  csar <- results_csar %>% filter(! ecoregion %in% my_excluded_ers) %>%
+  csar <- results_csar %>%
+    filter(! ecoregion %in% my_excluded_ers) %>%
     group_by(REGION,times,ecoregion) %>%
-    summarise(extinctions=sum(extinctions)) %>%
+    summarise_at(vars(extinctions,value), sum) %>%
     mutate(score=extinctions) %>% mutate(score=ifelse(score <0,0,score)) %>%
-    group_by(REGION,times) %>% summarise(score=1-sum(score)) %>% mutate(ScenNr=scen)
+    group_by(REGION,times) %>%
+    summarise_at(vars(score,value), sum) %>% ungroup() %>%
+    mutate(score=1-score) %>% mutate(ScenNr=scen)
+
+  # SRP: final check for consistency with initial lu
+  test <- all.equal(csar[2:11,"value"]$value,total_lu$total)
+  if (!isTRUE(test)) warning(paste("Csar: csar lu total != initial total -", test))
 
 } else {
   csar_simu <- csar <- NULL
 }
 
 # Save ns and REGION level biodiv results ------
-#saveRDS(list(bii_simu,bii,csar_simu,csar,downscalr_out0,downscalr_out,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for diagnosis: unload also intermediate LUC results
-saveRDS(list(bii_simu,bii,csar_simu,csar,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for normal pipeline runs: only unload important results
+# saveRDS(list(bii_simu,bii,csar_simu,csar,downscalr_out0,downscalr_out,results0,results),paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for diagnosis: unload also intermediate LUC results
+# SRP: add output at the end of BII/cSAR computations (REGION level)
+saveRDS(list("bii_simu"=bii_simu,
+             "bii"= bii,
+             "csar_simu"=csar_simu,
+             "csar"=csar,
+             "merged_lu"=results0,
+             "merged_lu2"=results,
+             "final_lu_bii"=final_lu_bii,
+             "final_lu_csar"=final_lu_csar),
+        paste0("Output/biodiversity_",project,"_",lab,".RData")) ## for normal pipeline runs: only unload important results
 
