@@ -1,6 +1,11 @@
 args <- commandArgs(trailing = TRUE)
 
 
+print("==============Session Info====================")
+sessionInfo()
+print("==============End Session Info====================")
+
+
 library(tidyverse)
 library(fs)
 
@@ -192,7 +197,8 @@ process_csar <- function(x){
   out <- x %>%
     left_join(lc_map, by=c("LC_TYPE")) %>% left_join(csar_lc_map, by=c("LC_BTC")) %>%
     filter(! LC_TYPE %in% c( "forest_new_ha","forest_old_ha")) %>%
-    left_join(eco_map,by=c("ns"), relationship = "many-to-many") %>%
+    # left_join(eco_map,by=c("ns"), relationship = "many-to-many") %>%
+    left_join(eco_map,by=c("ns")) %>% #Note: old versions of dplyr (<1.1.0) pkg did not support "relationship" argument.
     left_join(csar_coefs, by=c("ecoregion", "LUclass")) %>%
     mutate(CF = ifelse(LC_TYPE == "OthNatLnd", 0, CF),
            LUclass=ifelse(LC_TYPE == "OthNatLnd", 0, CF)) %>%
@@ -271,7 +277,7 @@ res2 <- res1 %>% left_join(maplayer_isforest_new) %>%
                       recode(lu.to,"RstLnd"="RstLnd_YesAffor"),
                       recode(lu.to,"RstLnd"="RstLnd_NoAffor")))
 
-# Reallocate Rstlnd_YesAffor to OtherNatLnd
+# Reallocate Rstlnd_YesAffor to OthNatLnd (because it was treated in G4M same as OthNatLnd - both are "unreserved") to prep for G4M_DS_merge.
 res3 <- res2 %>%
   mutate(lu.from=recode(lu.from,"RstLnd_YesAffor"="OthNatLnd")) %>%
   mutate(lu.to=recode(lu.to,"RstLnd_YesAffor"="OthNatLnd"))
@@ -309,12 +315,11 @@ results <- results %>%
 # SRP: keep the split, but will be treated as abnlnd
 #results$lu.to[results$lu.to=="RstLnd_NoAffor"]="OthNatLnd"
 #results$lu.from[results$lu.from=="RstLnd_NoAffor"]="OthNatLnd"
+# results <- results %>%
+#   group_by(REGION,times,ns,lu.to,lu.from) %>%
+#   summarise(value=sum(value), .groups = "drop") %>%
+#   ungroup()
 # End SRP
-
-results <- results %>%
-  group_by(REGION,times,ns,lu.to,lu.from) %>%
-  summarise(value=sum(value), .groups = "drop") %>%
-  ungroup()
 
 ## END YW separate restored_nf age class
 
@@ -449,7 +454,7 @@ totabn <- natlnd_cons %>%
   mutate(tot=rowSums(across(c(contains("restored"),"OthNatLnd")),
                      na.rm=TRUE)) %>%
   group_by(REGION, times) %>%
-  summarise_at(vars(-c(ns)), sum)
+  summarise_at(vars(-c(ns)), sum,na.rm=TRUE)
 
 test <- all.equal(totabn$tot,total_lu$OthNatLnd)
 if (!isTRUE(test)) warning(paste("Abn: total abnlnd + othnatlnd != initial othnatlnd",test))
@@ -539,9 +544,11 @@ restored <- results %>% filter(lu.to == "forest_new_ha") %>% group_by(REGION,tim
   spread(times,value) %>% #drop_na()
   replace(is.na(.), 0)
 
+flag_no_restored_in_region <- if (nrow(restored) == 0) TRUE else FALSE
+if(!flag_no_restored_in_region){
 land <- restored %>%
   pivot_longer(cols = -c(REGION, ns), names_to="times")
-
+}
 # if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.before = `2010`) #sometimes 2010 transition may not exist
 if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate(`2000`,.after = `ns`)
 
@@ -549,6 +556,14 @@ if (dim(restored)[1] > 0) restored <- restored %>% mutate(`2000`=0) %>% relocate
 # Define simulation length
 ncols <- dim(restored)[2]
 ini_col <- 3
+
+# Afforestation area
+afflnd <- results %>% filter(lu.to == "forest_new_ha") %>%
+  filter(value > 0) %>%
+  tidyr::complete(REGION = unique(results$REGION),
+                  times  = unique(results$times),
+                  ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
+  group_by(REGION,times,ns) %>% summarise(value=sum(value), .groups = "drop")
 
 if (dim(restored)[1] > 0){
   # Get restoration from 0 to 10 years
@@ -595,14 +610,6 @@ if (dim(restored)[1] > 0){
     mutate_at(vars(contains("restored_")), ~ifelse(diff > 0, .-diff*./totabn, .)) %>%
     select(-totabn, -diff)
 
-  # Afforestation area
-  afflnd <- results %>% filter(lu.to == "forest_new_ha") %>%
-    filter(value > 0) %>%
-    tidyr::complete(REGION = unique(results$REGION),
-                    times  = unique(results$times),
-                    ns     = unique(results$ns),lu.from,lu.to) %>% replace_na(list(value=0)) %>%
-    group_by(REGION,times,ns) %>% summarise(value=sum(value), .groups = "drop")
-
   afflnd_aux <- afflnd %>% rename(forest_new_ha=value) %>%
     left_join(restoration, by=c("REGION", "ns", "times")) %>% replace(is.na(.), 0) %>%
     mutate(forest_new_ha=forest_new_ha-rowSums(across(starts_with("restored")), na.rm = T))
@@ -610,9 +617,19 @@ if (dim(restored)[1] > 0){
   # Aggregate and clean
   afflnd_cons <- afflnd_aux[,1:min(ncols,dim(afflnd_aux)[2])] %>%
     gather(lu.to,value,-c( REGION,times,ns)) %>% replace(. < 0, 0)
+  
 } else {
-  afflnd_cons <- results %>% slice(1) %>% dplyr::select(-lu.from) %>%
-    mutate(lu.to="forest_new_ha",value=0)
+  if(dim(afflnd)[1] > 0){
+    afflnd_aux <- afflnd %>% rename(forest_new_ha=value)%>% replace(is.na(.), 0) %>%
+      mutate(forest_new_ha=forest_new_ha-rowSums(across(starts_with("restored")), na.rm = T))
+    
+    afflnd_cons <- afflnd_aux[,1:dim(afflnd_aux)[2]] %>%
+      gather(lu.to,value,-c( REGION,times,ns)) %>% replace(. < 0, 0)
+    
+  }else{
+    afflnd_cons <- results %>% slice(1) %>% dplyr::select(-lu.from) %>%
+      mutate(lu.to="forest_new_ha",value=0)
+  }
 }
 
 # SRP check: total restored + forest_new_ha = initial forest_new_ha
@@ -719,8 +736,8 @@ if (get_bii) {
     rbind(natlnd_cons,afflnd_cons,restored_nf) %>% spread(lu.to,value) %>%
     replace(is.na(.), 0)  %>%    left_join(f_nf_share, by="ns")  %>%
     left_join(managed_forests, by=c("times","ns")) %>% full_join(built %>% filter(ns %in% results$ns), by=c("REGION","ns")) %>%
-    mutate(forest_managed=used*(forest_new_ha+forest_old_ha),
-           forest_unmanaged=(1-used)*(forest_new_ha+forest_old_ha)) %>%
+    mutate(forest_managed=used*(coalesce(forest_new_ha,0)+coalesce(forest_old_ha,0)),
+           forest_unmanaged=(1-used)*(coalesce(forest_new_ha,0)+coalesce(forest_old_ha,0))) %>%
     dplyr::select(-c(used,forest_new_ha,forest_old_ha)) %>%
     gather(LC_TYPE,value,-c(REGION,times,ns,forest_share,nonforest_share))
 
@@ -731,10 +748,16 @@ if (get_bii) {
     summarise(value=sum(value, na.rm=TRUE), .groups = "drop") %>%
     ungroup()%>% pivot_wider(names_from = "LC_TYPE")%>%
     mutate(total = rowSums(across(-c(REGION, times)), na.rm=TRUE),
-           totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE),
-           totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+           # totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE), #sometimes a column e.g. forest_unmanaged may not exist, then it will cause an error. Therefore use any_of as below
+           totforres = rowSums(across(any_of(c("forest_managed", "forest_unmanaged"))), na.rm = TRUE) +
+             across(starts_with("restored_")) %>% as.matrix() %>% rowSums(na.rm = TRUE),
+           # totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+           totabnoth = rowSums(across(any_of("OthNatLnd")), na.rm = TRUE) +
+             across(starts_with("Abn")) %>% as.matrix() %>% rowSums(na.rm = TRUE),
            totresnoaff = rowSums(across(ends_with("nf")), na.rm=TRUE))
 
+
+  
   test <- all.equal(country_res$total,total_lu$total)
   if (!isTRUE(test)) warning(paste("BII: total != initial total -", test))
   #testthat::expect_equal(country_res$total-country_res$built_area, total_lu$total)
@@ -922,8 +945,12 @@ if (get_csar){
    summarise(value=sum(value, na.rm=TRUE), .groups="drop") %>%
    ungroup()%>% pivot_wider(names_from = "LC_TYPE")%>%
    mutate(total = rowSums(across(-c(REGION, times)), na.rm=TRUE),
-          totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE),
-          totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+          # totforres = rowSums(across(c("forest_managed","forest_unmanaged", starts_with("restored_"))), na.rm=TRUE),
+          totforres = rowSums(across(any_of(c("forest_managed", "forest_unmanaged"))), na.rm = TRUE) +
+            across(starts_with("restored_")) %>% as.matrix() %>% rowSums(na.rm = TRUE),
+          # totabnoth = rowSums(across(c("OthNatLnd", starts_with("Abn"))), na.rm=TRUE),
+          totabnoth = rowSums(across(any_of("OthNatLnd")), na.rm = TRUE) +
+            across(starts_with("Abn")) %>% as.matrix() %>% rowSums(na.rm = TRUE),
           totresnoaff = rowSums(across(ends_with("nf")), na.rm=TRUE))
 
  test <- all.equal(country_res$total,total_lu$total)
