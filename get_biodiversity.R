@@ -246,8 +246,8 @@ scen2 <- current_scen$SCEN2
 scen3 <- current_scen$SCEN3
 
 # Load in downscalr output
-downscalr_out0 <- rfunc(path(str_glue( "output_", cluster_nr, ".",
-                                      sprintf("%06d",current_scen$ScenNr),".RData")))
+downscalr_out0 <- rfunc(path(str_glue( "output_",project,"_",lab,"_", cluster_nr, ".",
+                                       sprintf("%06d",current_scen$ScenNr),".RData")))
 #  group_by(times) %>% group_split()
 
 # Process RstLnd in res---
